@@ -1,0 +1,68 @@
+#!/bin/bash
+
+# Ansi color code variables
+red="\e[0;91m"
+blue="\e[0;94m"
+expand_bg="\e[K"
+blue_bg="\e[0;104m${expand_bg}"
+red_bg="\e[0;101m${expand_bg}"
+green_bg="\e[0;102m${expand_bg}"
+green="\e[0;92m"
+white="\e[0;97m"
+bold="\e[1m"
+uline="\e[4m"
+reset="\e[0m"
+
+
+#;; Get root domains (Either from the program's scope or by using a tool
+#amass intel -active -whois -d owasp.com -o rootdomains
+
+#;; Make sure the root domains are in scope by grepping for keywords.
+# grep -E 'keyword|keyword2' rootdomains > temp; mv temp rootdomains
+
+# sanitize domain names
+# sed -e 's/\/[a-zA-Z0-9-]*//g' test > test2
+
+echo -e "${green}[+] Firewall recon...${reset}"
+wafw00f -i rootdomains -o wafw00f-report 1>/dev/null 2>/dev/null 
+
+#Check if the target is behind the cursed Akamai firewall
+if grep -q -F -i "akamai" wafw00f-report ; then
+  echo -e "${red}[!]The target is behind Akamai firewall!\n${red}[!]Slowing down the enumeratoin process...${reset}";
+fi
+
+echo -e "${green}[+] Enumerating subdomains...${reset}"
+for i in $(cat rootdomains); do findomain-linux -t $i -o 1>/dev/null ; cat $i.txt 1>/dev/null | anew subdomains.txt 1>/dev/null ; sublist3r -d $i -o $i.txt 1>/dev/null ; cat $i.txt 1>/dev/null | anew subdomains.txt 1>/dev/null ; subfinder -o $i.txt -d $i 1>/dev/null ; cat $i.txt | anew subdomains.txt 1>/dev/null; rm $i.txt; done 1>/dev/null
+cat subdomains.txt| httpx -o http-alive 1>/dev/null
+rm subdomains.txt
+
+echo -e "${green}[+] Probing for alive hosts...${reset}"
+cat http-alive | cut -d '/' -f 3 > alive-domains 1>/dev/null 
+
+
+echo -e "${green}[+] Scanning with Nuclei...${reset}"
+nuclei -ut -update 1>/dev/null
+nuclei -l http-alive -o nuclei-report 1>/dev/null
+
+echo -e "${green}[+] Extracting URLs...${reset}"
+cat http-alive | gau -o URLs.txt 1>/dev/null
+
+echo -e "${green}[+] Extracting URLs containing parameters...${reset}"
+cat alive-domains | while read host do; do /opt/ParamSpider/paramspider.py -d $host -o params-$host; done 1>/dev/null
+cat ./output/params-* > paramSpider.txt
+rm -rf ./output
+
+echo -e "${green}[+] Extracting JavaScript files...${reset}"
+cat http-alive | while read host do; do gospider -s $host --js -o js-$host; done 1>/dev/null
+cat ./js-$host/* > js-files.txt
+rm -rf ./js-*
+cat http-alive | hakrawler -subs -u | anew hakrawler.txt 1>/dev/null
+cat http-alive | getJS --output getjs.txt 1>/dev/null
+cat js-files.txt | anew hakrawler.txt | anew getjs.txt | anew ALL-URLs-and-JS.txt 1>/dev/null
+rm js-files.txt hakrawler.txt getjs.txt
+
+DIRECTORY=$(echo `pwd` | grep -o '[^/]\+$')
+
+echo -e "${green}[+] Executing Sniper Reconnaissance...${reset}"
+/opt/Sn1per/sniper -u 1>/dev/null
+/opt/Sn1per/sniper -o -re -f alive-domains -w $DIRECTORY 1>/dev/null
